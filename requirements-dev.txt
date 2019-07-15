@@ -1,0 +1,7 @@
+troposphere
+troposphere_dns_certificate>=1.7.0
+docopt
+awacs
+yq
+boto3
+-r src/requirements.txt
