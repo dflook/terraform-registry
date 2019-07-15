@@ -142,11 +142,11 @@ class TerraformRegistryTemplate(Template):
             'ApiTokens',
             TableName=Sub('${AWS::StackName}ApiTokens'),
             AttributeDefinitions=[
-                dynamodb.AttributeDefinition(AttributeName='tokenId', AttributeType='S')
+                dynamodb.AttributeDefinition(AttributeName='token', AttributeType='S')
             ],
             BillingMode='PAY_PER_REQUEST',
             KeySchema=[
-                dynamodb.KeySchema(AttributeName='tokenId', KeyType='HASH')
+                dynamodb.KeySchema(AttributeName='token', KeyType='HASH')
             ],
             SSESpecification=dynamodb.SSESpecification(SSEEnabled=True)
         ))

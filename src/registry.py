@@ -94,10 +94,9 @@ class RegistryError(RegistryResponse, Exception):
 
 
 class Registry:
-    def __init__(self, bucket_name: str, api_token_table_name: str):
+    def __init__(self, bucket_name: str):
         self.s3 = boto3.client('s3')
         self._bucket_name = bucket_name
-        self._api_token_table_name = api_token_table_name
 
     def list_modules(self, namespace: Optional[str] = None) -> Iterable[Module]:
         pass
@@ -189,10 +188,47 @@ class Registry:
         versions = [archive_version(key) for key in keys]
         return str(max(versions))
 
+class RegistryAuthorization:
+    def __init__(self, table_name: str):
+        self._table_name = table_name
+        self.dynamodb = boto3.resource('dynamodb')
+        self.table = self.dynamodb.Table(table_name)
 
-def registry_request(event: Dict, registry: Registry) -> RegistryResponse:
-    # if 'Authorization' in event['headers']:
-    #    raise RegistryError(403, 'Not Authorized')
+    def read_namespaces(self, api_token: str) -> Iterable[str]:
+        """
+        Return the namespaces an api_token has read access to
+        """
+
+        response = self.table.get_item(Key={'token': api_token})
+
+        if 'Item' not in response:
+            raise RegistryError(401, 'Invalid token')
+
+        return response['Item'].get('read', [])
+
+    def write_namespaces(self, api_token: str) -> Iterable[str]:
+        """
+        Return the namespaces an api_token has read access to
+        """
+
+        response = self.table.get_item(Key={'token': api_token})
+
+        if 'Item' not in response:
+            raise RegistryError(401, 'Invalid token')
+
+        return response['Item'].get('write', [])
+
+def get_api_token(event: Dict):
+    if 'Authorization' not in event['headers']:
+        return 'Anonymous'
+
+    header = event['headers']['Authorization']
+    if not header.startswith('Bearer '):
+        raise RegistryError(401, 'Invalid token')
+
+    return header[len('Bearer '):]
+
+def registry_request(event: Dict, registry: Registry, registry_auth: RegistryAuthorization) -> RegistryResponse:
 
     parameters = event.get('pathParameters', {})
     if parameters is None:
@@ -223,6 +259,9 @@ def registry_request(event: Dict, registry: Registry) -> RegistryResponse:
 
     if parameters['namespace'] == 'search':
         raise RegistryError(501, 'Not Implemented')
+
+    if parameters['namespace'] not in registry_auth.read_namespaces(get_api_token(event)):
+        raise RegistryError(403, 'Forbidden')
 
     if 'name' not in parameters:
         registry.list_modules(parameters['namespace'])
@@ -274,12 +313,16 @@ def registry_request(event: Dict, registry: Registry) -> RegistryResponse:
 def handler(event: Dict, context=None) -> Dict:
     logger.info('event: %r', event)
 
-    global registry
+    global registry, registration_auth
+
     if registry is None:
-        registry = Registry(os.environ['TerraformModules'], os.environ['ApiTokens'])
+        registry = Registry(os.environ['TerraformModules'])
+
+    if registration_auth is None:
+        registration_auth = RegistryAuthorization(os.environ['ApiTokens'])
 
     try:
-        response = registry_request(event, registry)
+        response = registry_request(event, registry, registration_auth)
         return response.api_gateway_response()
     except RegistryError as registry_error:
         logger.exception('RegistryError')
