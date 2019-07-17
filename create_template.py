@@ -18,6 +18,7 @@ import base64
 import hashlib
 import random
 import string
+from typing import Tuple
 
 from docopt import docopt
 import json
@@ -35,9 +36,14 @@ from awacs.aws import PolicyDocument, Statement, Allow, Action, Principal, Condi
 
 LAMBDA_PACKAGE_BUCKET = 'terraform-registry-build'
 
-def sha256(path):
+def sha256(path) -> Tuple[str, str]:
     with open(path, 'rb') as f:
-        return base64.b64encode(hashlib.sha256(f.read()).digest()).decode()
+        h = hashlib.sha256(f.read())
+
+    aws_sha256 = base64.b64encode(h.digest()).decode()
+    hex_sha256 = h.hexdigest()
+    return aws_sha256, hex_sha256
+
 
 class TerraformRegistryTemplate(Template):
 
@@ -175,12 +181,13 @@ class TerraformRegistryTemplate(Template):
             )
         ))
 
-        version_name = 'TerraformRegistryVersion' + ''.join(random.choice(string.ascii_letters) for _ in range(5))
+        aws_sha256, hex_sha256 = sha256('build/lambda.zip')
+        version_name = 'TerraformRegistryVersion' + hex_sha256
 
         self._lambda_function = self.add_resource(awslambda.Version(
-            'LambdaVersion',
-            CodeSha256=sha256('build/lambda.zip'),
-            Description=self._build_version,
+            version_name,
+            CodeSha256=aws_sha256,
+            Description=hex_sha256,
             FunctionName=Ref(lambda_function),
             DependsOn=[lambda_function],
             DeletionPolicy=Retain
@@ -296,15 +303,22 @@ class TerraformRegistryTemplate(Template):
             ParentId=Ref(version),
         ))
 
-        def add_method(resource):
+        upload = self.add_resource(apigateway.Resource(
+            'ApiUpload',
+            RestApiId=Ref(rest_api),
+            PathPart='upload',
+            ParentId=Ref(version),
+        ))
+
+        def add_method(resource, method='GET'):
             return self.add_resource(apigateway.Method(
-                f'GET{resource.title}',
+                f'{method}{resource.title}',
                 RestApiId=Ref(rest_api),
                 ResourceId=Ref(resource),
                 AuthorizationType='NONE',
-                HttpMethod='GET',
+                HttpMethod=method,
                 Integration=apigateway.Integration(
-                    f'GET{resource.title}Integration',
+                    f'{method}{resource.title}Integration',
                     Type='AWS_PROXY',
                     Uri=Join('', ['arn:aws:apigateway:', Region, ':lambda:path/2015-03-31/functions/',
                                   Ref(self._lambda_function), '/invocations']),
@@ -312,7 +326,7 @@ class TerraformRegistryTemplate(Template):
                 )
             ))
 
-        return [add_method(x) for x in [version, download, download_redirect]]
+        return [add_method(x) for x in [version, download, download_redirect, upload]] + [add_method(upload, 'PUT')]
 
     def add_certificate(self):
         self.certificate = self.add_resource(Certificate(
@@ -340,6 +354,7 @@ class TerraformRegistryTemplate(Template):
         ))
 
         methods = self.add_registry_api(rest_api)
+        methods += [self.add_service_discovery_api(rest_api)]
 
         self.add_resource(awslambda.Permission(
             f'ApigatewayPermission',
@@ -348,8 +363,6 @@ class TerraformRegistryTemplate(Template):
             FunctionName=Ref(self._lambda_function),
             SourceArn=Join('', ['arn:aws:execute-api:', Region, ':', AccountId, ':', Ref(rest_api), '/*'])
         ))
-
-        methods += [self.add_service_discovery_api(rest_api)]
 
         deployment_id = 'ApiDeployment' + ''.join(random.choice(string.ascii_letters) for _ in range(5))
 

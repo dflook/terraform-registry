@@ -27,4 +27,8 @@ publish: build/lambda.zip build/registry.template
 	aws s3 cp build/lambda.zip s3://terraform-registry-build/${TAG}/lambda.zip
 	aws s3 cp build/registry.template s3://terraform-registry-build/${TAG}/registry.template
 
+deploy: build/lambda.zip build/registry.template
+	aws s3 cp build/lambda.zip s3://terraform-registry-build/${TAG}/lambda.zip
+	aws cloudformation deploy --template-file build/registry.template --stack-name Dan --s3-bucket terraform-registry-build --force-upload --s3-prefix "${TAG}" --capabilities CAPABILITY_NAMED_IAM
+
 .PHONY: all clean publish build/registry.template

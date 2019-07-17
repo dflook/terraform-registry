@@ -143,6 +143,20 @@ class Registry:
 
         return url
 
+    def upload(self, namespace: str, name: str, provider: str, version: str) -> str:
+        'Return an upload link for this module'
+
+        url = self.s3.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': self._bucket_name,
+                'Key': f'{namespace}/{name}/{provider}/{version}.tar.gz'
+            },
+            ExpiresIn=300
+        )
+
+        return url
+
     def list_latest_versions(self, namespace: str, name: str) -> Iterable[Module]:
         'Return the latest version of a module for each provider'
         pass
@@ -302,6 +316,17 @@ def registry_request(event: Dict, registry: Registry, registry_auth: RegistryAut
 
         return RegistryResponse(headers={
             'X-Terraform-Get': '/download.tar.gz?url=' + base64.b64encode(url.encode()).decode()
+        })
+
+    if event['path'].endswith('/upload'):
+        if parameters['namespace'] not in registry_auth.write_namespaces(get_api_token(event)):
+            raise RegistryError(403, 'Forbidden')
+
+        url = registry.upload(parameters['namespace'], parameters['name'], parameters['provider'],
+                                parameters['version'])
+
+        return RegistryResponse(status=307, headers={
+            'Location': url
         })
 
     module = registry.get_module(parameters['namespace'], parameters['name'], parameters['provider'],

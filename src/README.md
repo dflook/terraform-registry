@@ -9,21 +9,27 @@ Private modules must use an api key.
 
 ## Endpoints
 
-GET /
+GET /.well-known/terraform.json
+*   Service Discovery endpoint
+GET /download<ext>?url=<b64 encoded url>
+*   Redirect to the url parameter
+GET /v1/
     List modules - PAGED
-GET /<namespace>
+GET /v1/<namespace>
     List modules in namespace
-GET /search - PAGED
+GET /v1/search - PAGED
     Search modules
-GET /<namespace>/<name> - PAGED
+GET /v1/<namespace>/<name> - PAGED
     List latest version of each provider for a module
-GET /<namespace>/<name>/<provider>
+GET /v1/<namespace>/<name>/<provider>
     Latest Version for a Specific Module Provider
-GET /<namespace>/<name>/<provider>/download
+GET /v1/<namespace>/<name>/<provider>/download
     This endpoint downloads the latest version of a module for a single provider.    
-GET /<namespace>/<name>/<provider>/versions
+GET /v1/<namespace>/<name>/<provider>/versions
     List versions of a module
-GET /<namespace>/<name>/<provider</<version>
+GET /v1/<namespace>/<name>/<provider</<version>
     This endpoint returns the specified version of a module for a single provider.
-GET /<namespace>/<name>/<provider>/<version>/download
+GET /v1/<namespace>/<name>/<provider>/<version>/download
     Download module version
+
+POST /v1/<namespace>/<name>/<provider</<version>/upload
