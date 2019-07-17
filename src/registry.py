@@ -10,8 +10,9 @@ from dataclasses import dataclass
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
-registry = None
 
+registry = None
+registration_auth = None
 
 @dataclass
 class Module:
@@ -139,8 +140,6 @@ class Registry:
             },
             ExpiresIn=300
         )
-
-        url = 'http://' + url[len('https://'):]
 
         return url
 

@@ -16,10 +16,12 @@ Options:
 """
 import base64
 import hashlib
+import random
+import string
 
 from docopt import docopt
 import json
-from troposphere import Template, GetAtt, StackName, Ref, Join, Region, AccountId, Sub, Parameter
+from troposphere import Template, GetAtt, StackName, Ref, Join, Region, AccountId, Sub, Parameter, Retain
 from troposphere_dns_certificate.certificatemanager import Certificate
 import troposphere.iam as iam
 import troposphere.awslambda as awslambda
@@ -29,9 +31,13 @@ import troposphere.cloudfront as cloudfront
 import troposphere.dynamodb as dynamodb
 import troposphere.s3 as s3
 
-from awacs.aws import PolicyDocument, Statement, Allow, Action, Principal
+from awacs.aws import PolicyDocument, Statement, Allow, Action, Principal, Condition, Bool, Deny
 
 LAMBDA_PACKAGE_BUCKET = 'terraform-registry-build'
+
+def sha256(path):
+    with open(path, 'rb') as f:
+        return base64.b64encode(hashlib.sha256(f.read()).digest()).decode()
 
 class TerraformRegistryTemplate(Template):
 
@@ -48,21 +54,22 @@ class TerraformRegistryTemplate(Template):
 
         self.set_version()
 
-        self.domain = Ref(self.add_parameter(Parameter(
+        self.domain = self.add_parameter(Parameter(
             'DomainName',
             Type='String',
             Description='The domain name to deploy to'
-        )))
+        ))
 
-        self.hosted_zone = Ref(self.add_parameter(Parameter(
+        self.hosted_zone = self.add_parameter(Parameter(
             'HostedZone',
             Type='AWS::Route53::HostedZone::Id',
             Description='The hosted zone'
-        )))
+        ))
 
         self.add_module_bucket()
         self.add_api_token_table()
         self.add_lambda_function()
+        self.add_certificate()
         self.add_api()
 
     def add_module_bucket(self: Template):
@@ -82,6 +89,38 @@ class TerraformRegistryTemplate(Template):
                 IgnorePublicAcls=True,
                 RestrictPublicBuckets=True
             )
+        ))
+
+        self.add_resource(s3.BucketPolicy(
+            'TerraformModulesBucketPolicy',
+            Bucket=Ref(self._bucket),
+            PolicyDocument=PolicyDocument(
+                Version='2012-10-17',
+                Statement=[
+                    Statement(
+                        Effect=Deny,
+                        Action=[Action('s3', 'GetObject')],
+                        Principal=Principal('*'),
+                        Resource=[Join('', ['arn:aws:s3:::', Ref(self._bucket), '/*'])],
+                        Condition=Condition(
+                            Bool({
+                                'aws:SecureTransport': False
+                            })
+                        )
+                    ),
+                    Statement(
+                        Effect=Deny,
+                        Action=[Action('s3', 'GetObject')],
+                        Principal=Principal('*'),
+                        Resource=[Join('', ['arn:aws:s3:::', Ref(self._bucket), '/*'])],
+                        Condition=Condition(
+                            Bool({
+                                'aws:SecureTransport': False
+                            })
+                        )
+                    )
+                ]
+            ),
         ))
 
     def add_lambda_function(self):
@@ -117,7 +156,7 @@ class TerraformRegistryTemplate(Template):
             ]
         ))
 
-        self._lambda_function = self.add_resource(awslambda.Function(
+        lambda_function = self.add_resource(awslambda.Function(
             'TerraformRegistry',
             Runtime='python3.7',
             Code=awslambda.Code(
@@ -134,6 +173,17 @@ class TerraformRegistryTemplate(Template):
                     'ApiTokens': Ref(self._api_token_table)
                 }
             )
+        ))
+
+        version_name = 'TerraformRegistryVersion' + ''.join(random.choice(string.ascii_letters) for _ in range(5))
+
+        self._lambda_function = self.add_resource(awslambda.Version(
+            'LambdaVersion',
+            CodeSha256=sha256('build/lambda.zip'),
+            Description=self._build_version,
+            FunctionName=Ref(lambda_function),
+            DependsOn=[lambda_function],
+            DeletionPolicy=Retain
         ))
 
     def add_api_token_table(self):
@@ -257,17 +307,35 @@ class TerraformRegistryTemplate(Template):
                     f'GET{resource.title}Integration',
                     Type='AWS_PROXY',
                     Uri=Join('', ['arn:aws:apigateway:', Region, ':lambda:path/2015-03-31/functions/',
-                                  GetAtt(self._lambda_function, 'Arn'), '/invocations']),
+                                  Ref(self._lambda_function), '/invocations']),
                     IntegrationHttpMethod='POST'
                 )
             ))
 
         return [add_method(x) for x in [version, download, download_redirect]]
 
+    def add_certificate(self):
+        self.certificate = self.add_resource(Certificate(
+            'GlobalCertificate',
+            ValidationMethod='DNS',
+            DomainName=Ref(self.domain),
+            DomainValidationOptions=[
+                {
+                    'DomainName': Ref(self.domain),
+                    'HostedZoneId': Ref(self.hosted_zone)
+                }
+            ],
+            Region='us-east-1',
+            Tags=[{
+                'Key': 'Name',
+                'Value': Ref(self.domain)
+            }]
+        ))
+
     def add_api(self):
         rest_api = self.add_resource(apigateway.RestApi(
             'Api',
-            Description=Sub('${AWS::StackName} Terraform Registry'),
+            Description=Join(' ', [Ref(self.domain), 'Terraform Registry']),
             Name=StackName
         ))
 
@@ -277,17 +345,20 @@ class TerraformRegistryTemplate(Template):
             f'ApigatewayPermission',
             Principal='apigateway.amazonaws.com',
             Action='lambda:InvokeFunction',
-            FunctionName=GetAtt(self._lambda_function, 'Arn'),
+            FunctionName=Ref(self._lambda_function),
             SourceArn=Join('', ['arn:aws:execute-api:', Region, ':', AccountId, ':', Ref(rest_api), '/*'])
         ))
 
         methods += [self.add_service_discovery_api(rest_api)]
 
+        deployment_id = 'ApiDeployment' + ''.join(random.choice(string.ascii_letters) for _ in range(5))
+
         deployment = self.add_resource(apigateway.Deployment(
-            'ApiDeployment',
-            Description=Sub('${AWS::StackName} Terraform Registry'),
+            deployment_id,
+            Description=self._build_version,
             RestApiId=Ref(rest_api),
-            DependsOn=methods
+            DependsOn=methods,
+            DeletionPolicy=Retain
         ))
 
         stage = self.add_resource(apigateway.Stage(
@@ -302,9 +373,39 @@ class TerraformRegistryTemplate(Template):
             TracingEnabled=True,
             StageName='prd',
             RestApiId=Ref(rest_api),
-            DeploymentId=Ref(deployment)
+            DeploymentId=Ref(deployment),
+            DependsOn=[deployment]
         ))
 
+        domain = self.add_resource(apigateway.DomainName(
+            'ApiDomain',
+            DomainName=Ref(self.domain),
+            CertificateArn=Ref(self.certificate),
+            EndpointConfiguration=apigateway.EndpointConfiguration(
+                Types=['EDGE']
+            )
+        ))
+
+        mapping = self.add_resource(apigateway.BasePathMapping(
+            'Mapping',
+            DomainName=Ref(domain),
+            RestApiId=Ref(rest_api),
+            Stage='prd',
+            DependsOn=['ApiStage']
+        ))
+
+        dns_record = self.add_resource(route53.RecordSetGroup(
+            'ApiDnsRecord',
+            HostedZoneId=Ref(self.hosted_zone),
+            RecordSets=[route53.RecordSet(
+                Name=Ref(self.domain),
+                AliasTarget=route53.AliasTarget(
+                    DNSName=GetAtt(domain, 'DistributionDomainName'),
+                    HostedZoneId='Z2FDTNDATAQYW2'
+                ),
+                Type='A'
+            )]
+        ))
 
 def main(arguments):
     version = arguments['<VERSION>']

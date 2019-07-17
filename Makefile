@@ -3,7 +3,7 @@ all: build/lambda.zip build/registry.template
 BRANCH:=$(shell git rev-parse --abbrev-ref HEAD)
 TAG:=$(shell git describe --always --dirty=+WIP-${USER}-$(shell date "+%Y-%m-%dT%H:%M:%S%z"))
 
-LAMBDA_CODE=$(find src/)
+LAMBDA_CODE=$(shell find src/)
 
 build/venv: requirements-dev.txt
 	python3 -m venv --clear --copies $@
@@ -17,7 +17,7 @@ build/lambda.zip: build/lambda_requirements $(LAMBDA_CODE)
 	cd build/lambda_requirements && zip --recurse-paths $(abspath $@) *
 	cd src && zip $(abspath $@) *.py
 
-build/registry.template: create_template.py build/venv
+build/registry.template: create_template.py build/lambda.zip build/venv
 	build/venv/bin/python $< "$(TAG)" --output $@
 
 clean:
