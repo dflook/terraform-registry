@@ -11,8 +11,10 @@ Private modules must use an api key.
 
 GET /.well-known/terraform.json
 *   Service Discovery endpoint
+
 GET /download<ext>?url=<b64 encoded url>
 *   Redirect to the url parameter
+
 GET /v1/
     List modules - PAGED
 GET /v1/<namespace>

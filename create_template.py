@@ -26,7 +26,7 @@ from troposphere import Template, GetAtt, StackName, Ref, Join, Region, AccountI
 from troposphere_dns_certificate.certificatemanager import Certificate
 import troposphere.iam as iam
 import troposphere.awslambda as awslambda
-import troposphere.apigateway as apigateway
+import troposphere.apigatewayv2 as apigatewayv2
 import troposphere.route53 as route53
 import troposphere.cloudfront as cloudfront
 import troposphere.dynamodb as dynamodb
@@ -73,13 +73,14 @@ class TerraformRegistryTemplate(Template):
         ))
 
         self.add_module_bucket()
+        self.add_provider_bucket()
         self.add_api_token_table()
         self.add_lambda_function()
         self.add_certificate()
         self.add_api()
 
     def add_module_bucket(self: Template):
-        self._bucket = self.add_resource(s3.Bucket(
+        self._module_bucket = self.add_resource(s3.Bucket(
             'TerraformModules',
             AccessControl='Private',
             BucketEncryption=s3.BucketEncryption(
@@ -99,7 +100,7 @@ class TerraformRegistryTemplate(Template):
 
         self.add_resource(s3.BucketPolicy(
             'TerraformModulesBucketPolicy',
-            Bucket=Ref(self._bucket),
+            Bucket=Ref(self._module_bucket),
             PolicyDocument=PolicyDocument(
                 Version='2012-10-17',
                 Statement=[
@@ -107,7 +108,7 @@ class TerraformRegistryTemplate(Template):
                         Effect=Deny,
                         Action=[Action('s3', 'GetObject')],
                         Principal=Principal('*'),
-                        Resource=[Join('', ['arn:aws:s3:::', Ref(self._bucket), '/*'])],
+                        Resource=[Join('', ['arn:aws:s3:::', Ref(self._module_bucket), '/*'])],
                         Condition=Condition(
                             Bool({
                                 'aws:SecureTransport': False
@@ -118,7 +119,7 @@ class TerraformRegistryTemplate(Template):
                         Effect=Deny,
                         Action=[Action('s3', 'GetObject')],
                         Principal=Principal('*'),
-                        Resource=[Join('', ['arn:aws:s3:::', Ref(self._bucket), '/*'])],
+                        Resource=[Join('', ['arn:aws:s3:::', Ref(self._module_bucket), '/*'])],
                         Condition=Condition(
                             Bool({
                                 'aws:SecureTransport': False
@@ -128,6 +129,58 @@ class TerraformRegistryTemplate(Template):
                 ]
             ),
         ))
+
+    def add_provider_bucket(self: Template):
+        self._provider_bucket = self.add_resource(s3.Bucket(
+            'TerraformProviders',
+            AccessControl='Private',
+            BucketEncryption=s3.BucketEncryption(
+                ServerSideEncryptionConfiguration=[
+                    s3.ServerSideEncryptionRule(
+                        ServerSideEncryptionByDefault=s3.ServerSideEncryptionByDefault(SSEAlgorithm='AES256')
+                    )
+                ]
+            ),
+            PublicAccessBlockConfiguration=s3.PublicAccessBlockConfiguration(
+                BlockPublicAcls=True,
+                BlockPublicPolicy=True,
+                IgnorePublicAcls=True,
+                RestrictPublicBuckets=True
+            )
+        ))
+
+        self.add_resource(s3.BucketPolicy(
+            'TerraformProvidersBucketPolicy',
+            Bucket=Ref(self._provider_bucket),
+            PolicyDocument=PolicyDocument(
+                Version='2012-10-17',
+                Statement=[
+                    Statement(
+                        Effect=Deny,
+                        Action=[Action('s3', 'GetObject')],
+                        Principal=Principal('*'),
+                        Resource=[Join('', ['arn:aws:s3:::', Ref(self._provider_bucket), '/*'])],
+                        Condition=Condition(
+                            Bool({
+                                'aws:SecureTransport': False
+                            })
+                        )
+                    ),
+                    Statement(
+                        Effect=Deny,
+                        Action=[Action('s3', 'GetObject')],
+                        Principal=Principal('*'),
+                        Resource=[Join('', ['arn:aws:s3:::', Ref(self._provider_bucket), '/*'])],
+                        Condition=Condition(
+                            Bool({
+                                'aws:SecureTransport': False
+                            })
+                        )
+                    )
+                ]
+            ),
+        ))
+
 
     def add_lambda_function(self):
         role = self.add_resource(iam.Role(
@@ -149,7 +202,12 @@ class TerraformRegistryTemplate(Template):
                             Statement(
                                 Effect=Allow,
                                 Action=[Action('s3', '*')],
-                                Resource=[GetAtt(self._bucket, 'Arn'), Join('', [GetAtt(self._bucket, 'Arn'), '/*'])]
+                                Resource=[
+                                    GetAtt(self._module_bucket, 'Arn'),
+                                    Join('', [GetAtt(self._module_bucket, 'Arn'), '/*']),
+                                    GetAtt(self._provider_bucket, 'Arn'),
+                                    Join('', [GetAtt(self._provider_bucket, 'Arn'), '/*'])
+                                ]
                             ),
                             Statement(
                                 Effect=Allow,
@@ -175,7 +233,8 @@ class TerraformRegistryTemplate(Template):
             Description=Sub('${AWS::StackName} Terraform Registry'),
             Environment=awslambda.Environment(
                 Variables={
-                    'TerraformModules': Ref(self._bucket),
+                    'TerraformModules': Ref(self._module_bucket),
+                    'ProviderBucket': Ref(self._provider_bucket),
                     'ApiTokens': Ref(self._api_token_table)
                 }
             )
@@ -208,126 +267,6 @@ class TerraformRegistryTemplate(Template):
             SSESpecification=dynamodb.SSESpecification(SSEEnabled=True)
         ))
 
-    def add_service_discovery_api(self, rest_api: apigateway.RestApi):
-        well_known = self.add_resource(apigateway.Resource(
-            'Apiwellknown',
-            RestApiId=Ref(rest_api),
-            PathPart='.well-known',
-            ParentId=GetAtt(rest_api, 'RootResourceId'),
-        ))
-
-        terraform_json = self.add_resource(apigateway.Resource(
-            'Apiwellknownterraformjson',
-            RestApiId=Ref(rest_api),
-            PathPart='terraform.json',
-            ParentId=Ref(well_known)
-        ))
-
-        service_discovery = self.add_resource(apigateway.Method(
-            'GETwellknownterraformjson',
-            RestApiId=Ref(rest_api),
-            ResourceId=Ref(terraform_json),
-            AuthorizationType='NONE',
-            HttpMethod='GET',
-            Integration=apigateway.Integration(
-                'GETwellknownterraformjsonIntegration',
-                Type='MOCK',
-                IntegrationResponses=[apigateway.IntegrationResponse(
-                    StatusCode='200',
-
-                    ResponseTemplates={
-                        'application/json':  json.dumps({'modules.v1': '/v1/'})
-                    }
-                )],
-                RequestTemplates={
-                    'application/json': json.dumps({'statusCode': 200})
-                },
-            ),
-            MethodResponses=[apigateway.MethodResponse(
-                StatusCode='200',
-                ResponseModels={
-                    'application/json': 'Empty'
-                }
-            )]
-        ))
-
-        return service_discovery
-
-    def add_registry_api(self, rest_api: apigateway.RestApi):
-        v1 = self.add_resource(apigateway.Resource(
-            'Apiv1',
-            RestApiId=Ref(rest_api),
-            PathPart='v1',
-            ParentId=GetAtt(rest_api, 'RootResourceId'),
-        ))
-
-        download_redirect = self.add_resource(apigateway.Resource(
-            'DownloadRedirect',
-            RestApiId=Ref(rest_api),
-            PathPart='download.tar.gz',
-            ParentId=GetAtt(rest_api, 'RootResourceId'),
-        ))
-
-        namespace = self.add_resource(apigateway.Resource(
-            'ApiNamespace',
-            RestApiId=Ref(rest_api),
-            PathPart='{namespace}',
-            ParentId=Ref(v1),
-        ))
-
-        name = self.add_resource(apigateway.Resource(
-            'ApiName',
-            RestApiId=Ref(rest_api),
-            PathPart='{name}',
-            ParentId=Ref(namespace),
-        ))
-
-        provider = self.add_resource(apigateway.Resource(
-            'ApiProvider',
-            RestApiId=Ref(rest_api),
-            PathPart='{provider}',
-            ParentId=Ref(name),
-        ))
-
-        version = self.add_resource(apigateway.Resource(
-            'ApiVersion',
-            RestApiId=Ref(rest_api),
-            PathPart='{version}',
-            ParentId=Ref(provider),
-        ))
-
-        download = self.add_resource(apigateway.Resource(
-            'ApiDownload',
-            RestApiId=Ref(rest_api),
-            PathPart='download',
-            ParentId=Ref(version),
-        ))
-
-        upload = self.add_resource(apigateway.Resource(
-            'ApiUpload',
-            RestApiId=Ref(rest_api),
-            PathPart='upload',
-            ParentId=Ref(version),
-        ))
-
-        def add_method(resource, method='GET'):
-            return self.add_resource(apigateway.Method(
-                f'{method}{resource.title}',
-                RestApiId=Ref(rest_api),
-                ResourceId=Ref(resource),
-                AuthorizationType='NONE',
-                HttpMethod=method,
-                Integration=apigateway.Integration(
-                    f'{method}{resource.title}Integration',
-                    Type='AWS_PROXY',
-                    Uri=Join('', ['arn:aws:apigateway:', Region, ':lambda:path/2015-03-31/functions/',
-                                  Ref(self._lambda_function), '/invocations']),
-                    IntegrationHttpMethod='POST'
-                )
-            ))
-
-        return [add_method(x) for x in [version, download, download_redirect, upload]] + [add_method(upload, 'PUT')]
-
     def add_certificate(self):
         self.certificate = self.add_resource(Certificate(
             'GlobalCertificate',
@@ -339,7 +278,6 @@ class TerraformRegistryTemplate(Template):
                     'HostedZoneId': Ref(self.hosted_zone)
                 }
             ],
-            Region='us-east-1',
             Tags=[{
                 'Key': 'Name',
                 'Value': Ref(self.domain)
@@ -347,64 +285,37 @@ class TerraformRegistryTemplate(Template):
         ))
 
     def add_api(self):
-        rest_api = self.add_resource(apigateway.RestApi(
-            'Api',
+        api = self.add_resource(apigatewayv2.Api(
+            'HttpApi',
+            Name=StackName,
             Description=Join(' ', [Ref(self.domain), 'Terraform Registry']),
-            Name=StackName
+            ProtocolType='HTTP',
+            Target=Ref(self._lambda_function),
         ))
-
-        methods = self.add_registry_api(rest_api)
-        methods += [self.add_service_discovery_api(rest_api)]
 
         self.add_resource(awslambda.Permission(
             f'ApigatewayPermission',
             Principal='apigateway.amazonaws.com',
             Action='lambda:InvokeFunction',
             FunctionName=Ref(self._lambda_function),
-            SourceArn=Join('', ['arn:aws:execute-api:', Region, ':', AccountId, ':', Ref(rest_api), '/*'])
+            SourceArn=Join('', ['arn:aws:execute-api:', Region, ':', AccountId, ':', Ref(api), '/*'])
         ))
 
-        deployment_id = 'ApiDeployment' + ''.join(random.choice(string.ascii_letters) for _ in range(5))
-
-        deployment = self.add_resource(apigateway.Deployment(
-            deployment_id,
-            Description=self._build_version,
-            RestApiId=Ref(rest_api),
-            DependsOn=methods,
-            DeletionPolicy=Retain
-        ))
-
-        stage = self.add_resource(apigateway.Stage(
-            'ApiStage',
-            MethodSettings=[apigateway.MethodSetting(
-                HttpMethod='*',
-                LoggingLevel='INFO',
-                MetricsEnabled=True,
-                ResourcePath='/*',
-                DataTraceEnabled=True,
-            )],
-            TracingEnabled=True,
-            StageName='prd',
-            RestApiId=Ref(rest_api),
-            DeploymentId=Ref(deployment),
-            DependsOn=[deployment]
-        ))
-
-        domain = self.add_resource(apigateway.DomainName(
-            'ApiDomain',
+        domain = self.add_resource(apigatewayv2.DomainName(
+            'HttpApiDomain',
             DomainName=Ref(self.domain),
-            CertificateArn=Ref(self.certificate),
-            EndpointConfiguration=apigateway.EndpointConfiguration(
-                Types=['EDGE']
-            )
+            DomainNameConfigurations=[
+                apigatewayv2.DomainNameConfiguration(
+                    CertificateArn=Ref(self.certificate),
+                )
+            ]
         ))
 
-        mapping = self.add_resource(apigateway.BasePathMapping(
+        mapping = self.add_resource(apigatewayv2.ApiMapping(
             'Mapping',
             DomainName=Ref(domain),
-            RestApiId=Ref(rest_api),
-            Stage='prd',
-            DependsOn=['ApiStage']
+            ApiId=Ref(api),
+            Stage='$default'
         ))
 
         dns_record = self.add_resource(route53.RecordSetGroup(
@@ -413,8 +324,8 @@ class TerraformRegistryTemplate(Template):
             RecordSets=[route53.RecordSet(
                 Name=Ref(self.domain),
                 AliasTarget=route53.AliasTarget(
-                    DNSName=GetAtt(domain, 'DistributionDomainName'),
-                    HostedZoneId='Z2FDTNDATAQYW2'
+                    DNSName=GetAtt(domain, 'RegionalDomainName'),
+                    HostedZoneId=GetAtt(domain, 'RegionalHostedZoneId')
                 ),
                 Type='A'
             )]

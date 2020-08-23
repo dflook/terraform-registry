@@ -1,4 +1,5 @@
-from typing import Dict, Iterable, Optional
+import re
+from typing import Dict, Iterable, Optional, List
 import json
 import logging
 from semantic_version import Version
@@ -9,37 +10,10 @@ import boto3
 from dataclasses import dataclass
 
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 registry = None
 registration_auth = None
-
-@dataclass
-class Module:
-    id: str
-    owner: str
-    namespace: str
-    version: str
-    provider: str
-    description: str
-    source: str
-    published_at: str
-    downloads: int
-    verified: bool
-
-    def to_dict(self) -> Dict:
-        return {
-            'id': self.id,
-            'owner': self.owner,
-            'namespace': self.namespace,
-            'version': self.version,
-            'provider': self.provider,
-            'description': self.description,
-            'source': self.source,
-            'published_at': str(self.published_at),
-            'downloads': self.downloads,
-            'verified': self.verified
-        }
 
 def archive_version(key) -> Optional[Version]:
     filename = os.path.basename(key)
@@ -76,7 +50,7 @@ class RegistryResponse:
 class RegistryError(RegistryResponse, Exception):
 
     def __init__(self, status=500, *errors):
-        super().__init__(content=errors, status=status)
+        super().__init__(content=errors, status=status, headers={'content-type': 'application/json'})
 
     def api_gateway_response(self):
         response = {
@@ -93,17 +67,10 @@ class RegistryError(RegistryResponse, Exception):
 
         return response
 
-
-class Registry:
+class ModuleRegistry:
     def __init__(self, bucket_name: str):
         self.s3 = boto3.client('s3')
         self._bucket_name = bucket_name
-
-    def list_modules(self, namespace: Optional[str] = None) -> Iterable[Module]:
-        pass
-
-    def search(self) -> Iterable[Module]:
-        pass
 
     def list_versions(self, namespace: str, name: str, provider: str) -> Iterable[str]:
         """List Available Versions for a Specific Module"""
@@ -157,37 +124,13 @@ class Registry:
 
         return url
 
-    def list_latest_versions(self, namespace: str, name: str) -> Iterable[Module]:
-        'Return the latest version of a module for each provider'
-        pass
+class ProviderRegistry:
+    def __init__(self, bucket_name: str):
+        self.s3 = boto3.client('s3')
+        self._bucket_name = bucket_name
 
-    def get_module(self, namespace: str, name: str, provider: str, version: str) -> Module:
-        """
-        Return module metadata
-        """
-
-        response = self.s3.get_object(
-            Bucket=self._bucket_name,
-            Key=f'{namespace}/{name}/{provider}/{version}'
-        )
-
-        return Module(
-            id=f'{namespace}/{name}/{provider}/{version}',
-            owner='ovotech',
-            namespace=namespace,
-            version=version,
-            provider=provider,
-            description=response['Metadata'].get('description', ''),
-            source=response['Metadata'].get('source', ''),
-            published_at=response['LastModified'],
-            downloads=0,
-            verified=True,
-        )
-
-    def latest_version(self, namespace: str, name: str, provider: str) -> Optional[str]:
-        """
-        Return the highest version of a module
-        """
+    def list_versions(self, namespace: str, name: str, provider: str) -> Iterable[str]:
+        """List Available Versions for a Specific Module"""
 
         response = self.s3.list_objects_v2(
             Bucket=self._bucket_name,
@@ -195,11 +138,48 @@ class Registry:
         )
 
         if 'Contents' not in response:
-            return None
+            return []
 
         keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Size'] > 0]
-        versions = [archive_version(key) for key in keys]
-        return str(max(versions))
+        return [str(archive_version(key)) for key in keys]
+
+    def download(self, namespace: str, name: str, provider: str, version: str) -> str:
+        'Return a download link for this module'
+
+        response = self.s3.list_objects_v2(
+            Bucket=self._bucket_name,
+            Prefix=f'{namespace}/{name}/{provider}/{version}'
+        )
+
+        if 'Contents' not in response:
+            raise RegistryError(404, f'Module not found for {namespace}/{name}/{provider}/{version}')
+
+        keys = [obj['Key'] for obj in response.get('Contents', []) if obj['Size'] > 0]
+
+        url = self.s3.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': self._bucket_name,
+                'Key': keys[0]
+            },
+            ExpiresIn=300
+        )
+
+        return url
+
+    def upload(self, namespace: str, name: str, provider: str, version: str) -> str:
+        'Return an upload link for this module'
+
+        url = self.s3.generate_presigned_url(
+            'put_object',
+            Params={
+                'Bucket': self._bucket_name,
+                'Key': f'{namespace}/{name}/{provider}/{version}.tar.gz'
+            },
+            ExpiresIn=300
+        )
+
+        return url
 
 class RegistryAuthorization:
     def __init__(self, table_name: str):
@@ -217,7 +197,7 @@ class RegistryAuthorization:
         if 'Item' not in response:
             raise RegistryError(401, 'Invalid token')
 
-        return response['Item'].get('read', [])
+        return response['Item'].get('read', []) + response['Item'].get('write', [])
 
     def write_namespaces(self, api_token: str) -> Iterable[str]:
         """
@@ -232,31 +212,134 @@ class RegistryAuthorization:
         return response['Item'].get('write', [])
 
 def get_api_token(event: Dict):
-    if 'Authorization' not in event['headers']:
+    if 'authorization' not in event['headers']:
         return 'Anonymous'
 
-    header = event['headers']['Authorization']
+    header = event['headers']['authorization']
     if not header.startswith('Bearer '):
         raise RegistryError(401, 'Invalid token')
 
     return header[len('Bearer '):]
 
-def registry_request(event: Dict, registry: Registry, registry_auth: RegistryAuthorization) -> RegistryResponse:
+def service_discovery(event: Dict) -> RegistryResponse:
+    return RegistryResponse({
+        'modules.v1': '/modules/v1/',
+        'providers.v1': '/providers/v1/'
+    }, headers={
+        'content-type': 'application/json'
+    })
 
-    parameters = event.get('pathParameters', {})
-    if parameters is None:
-        parameters = {}
+def module_request(path: str, event: Dict, registry: ModuleRegistry, registry_auth: RegistryAuthorization) -> RegistryResponse:
 
-    if event['path'] == '/.well-known/terraform.json':
-        return RegistryResponse({
-            'modules.v1': '/'
+    list_versions = re.match(r'/(?P<namespace>.*?)/(?P<name>.*?)/(?P<provider>.*?)/versions', path)
+    download_version = re.match(r'/(?P<namespace>.*?)/(?P<name>.*?)/(?P<provider>.*?)/(?P<version>.*?)/download', path)
+    upload_version = re.match(r'/(?P<namespace>.*?)/(?P<name>.*?)/(?P<provider>.*?)/(?P<version>.*?)/upload', path)
+
+    logger.info(path)
+
+    if list_versions:
+        logger.info(f'Attempting to list namespaces namespace {upload_version.group("namespace")} for token with write access to {registry_auth.write_namespaces(get_api_token(event))}')
+        if list_versions.group('namespace') not in registry_auth.read_namespaces(get_api_token(event)):
+            logger.info('Not allowed to read namespaces')
+            raise RegistryError(403, 'Forbidden')
+
+        versions = registry.list_versions(list_versions.group('namespace'), list_versions.group('name'), list_versions.group('provider'))
+        response = {
+            'modules': [{
+                'source': f"{list_versions.group('namespace')}/{list_versions.group('name')}/{list_versions.group('provider')}",
+                'versions': [{'version': version} for version in versions]
+            }]
+        }
+        return RegistryResponse(response, headers={'content-type': 'application/json'})
+
+    if download_version:
+        logger.info(f'Attempting download from namespace {upload_version.group("namespace")} for token with write access to {registry_auth.write_namespaces(get_api_token(event))}')
+        if download_version.group('namespace') not in registry_auth.read_namespaces(get_api_token(event)):
+            logger.info('Not allowed to download version')
+            raise RegistryError(403, 'Forbidden')
+
+        url = registry.download(download_version.group('namespace'),
+                                download_version.group('name'),
+                                download_version.group('provider'),
+                                download_version.group('version'))
+
+        return RegistryResponse(headers={
+            'X-Terraform-Get': '/download.tar.gz?url=' + base64.b64encode(url.encode()).decode()
         })
 
-    if event['path'].startswith('/download'):
-        # Terraform will add a 'terraform-get' query parameter to the request, which breaks request signing.
-        # Terraform is the worst piece of software I have to use on a daily basis.
-        # If they were competent they would use the user-agent header.
+    if upload_version:
+        logger.info(f'Attempting upload to namespace {upload_version.group("namespace")} for token with write access to {registry_auth.write_namespaces(get_api_token(event))}')
+        if upload_version.group('namespace') not in registry_auth.write_namespaces(get_api_token(event)):
+            logger.info('Get out of here')
+            raise RegistryError(403, 'Forbidden')
 
+        url = registry.upload(upload_version.group('namespace'),
+                              upload_version.group('name'),
+                              upload_version.group('provider'),
+                              upload_version.group('version'))
+
+        return RegistryResponse(status=307, headers={
+            'Location': url
+        })
+
+    raise RegistryError(501, 'Not Implemented')
+
+def provider_request(path: str, event: Dict, registry: ModuleRegistry, registry_auth: RegistryAuthorization) -> RegistryResponse:
+
+    list_versions = re.match(r'/(?P<namespace>.*?)/(?P<type>.*?)/versions', path)
+    download_version = re.match(r'/(?P<namespace>.*?)/(?P<type>.*?)/(?P<version>.*?)/download/(?P<os>.*?)/(?P<arch>.*)', path)
+    upload_version = re.match(r'/(?P<namespace>.*?)/(?P<type>.*?)/(?P<version>.*?)/download/(?P<os>.*?)/(?P<arch>.*)', path)
+
+    logger.info(path)
+
+    if list_versions:
+        versions = registry.list_versions(list_versions.group('namespace'), list_versions.group('name'), list_versions.group('provider'))
+        response = {
+            'modules': [{
+                'source': f"{list_versions.group('namespace')}/{list_versions.group('name')}/{list_versions.group('provider')}",
+                'versions': [{'version': version} for version in versions]
+            }]
+        }
+        return RegistryResponse(response, headers={'content-type': 'application/json'})
+
+    if download_version:
+        url = registry.download(download_version.group('namespace'),
+                                download_version.group('name'),
+                                download_version.group('provider'),
+                                download_version.group('version'))
+
+        return RegistryResponse(headers={
+            'X-Terraform-Get': '/download.tar.gz?url=' + base64.b64encode(url.encode()).decode()
+        })
+
+    if upload_version:
+        if upload_version.group('namespace') not in registry_auth.write_namespaces(get_api_token(event)):
+            raise RegistryError(403, 'Forbidden')
+
+        url = registry.upload(download_version.group('namespace'),
+                              download_version.group('name'),
+                              download_version.group('provider'),
+                              download_version.group('version'))
+
+        return RegistryResponse(status=307, headers={
+            'Location': url
+        })
+
+    raise RegistryError(501, 'Not Implemented')
+
+
+def extract_sub_path(path: str, prefixes: List[str]) -> str:
+    for p in prefixes:
+        if path.startswith(p):
+            return path[len(p):]
+    return path
+
+def registry_request(event: Dict, registry: ModuleRegistry, registry_auth: RegistryAuthorization) -> RegistryResponse:
+
+    if event['rawPath'] == '/.well-known/terraform.json':
+        return service_discovery(event)
+
+    if event['rawPath'].startswith('/download'):
         return RegistryResponse(
             status=302,
             headers={
@@ -264,89 +347,31 @@ def registry_request(event: Dict, registry: Registry, registry_auth: RegistryAut
             }
         )
 
-    logger.info('parameters is %r', parameters)
+    if event['rawPath'].startswith('/v1/') or event['rawPath'].startswith('/modules/v1/'):
+        sub_path = extract_sub_path(event['rawPath'], ['/v1', '/modules/v1'])
+        return module_request(sub_path, event, registry, registry_auth)
 
-    if 'namespace' not in parameters:
-        registry.list_modules()
-        raise RegistryError(501, 'Not Implemented')
+    if event['rawPath'].startswith('/providers/v1/'):
+        sub_path = extract_sub_path(event['rawPath'], ['/providers/v1'])
+        return provider_request(sub_path, event, registry, registry_auth)
 
-    if parameters['namespace'] == 'search':
-        raise RegistryError(501, 'Not Implemented')
-
-    if parameters['namespace'] not in registry_auth.read_namespaces(get_api_token(event)):
-        raise RegistryError(403, 'Forbidden')
-
-    if 'name' not in parameters:
-        registry.list_modules(parameters['namespace'])
-        raise RegistryError(501, 'Not Implemented')
-
-    if 'provider' not in parameters:
-        registry.list_latest_versions(parameters['namespace'], parameters['name'])
-        raise RegistryError(501, 'Not Implemented')
-
-    if 'version' not in parameters:
-        registry.list_versions(parameters['namespace'], parameters['name'], parameters['provider'])
-        raise RegistryError(501, 'Not Implemented')
-
-    if parameters['version'] == 'download':
-        latest_version = registry.latest_version(parameters['namespace'], parameters['name'], parameters['provider'])
-        location = f'{parameters["namespace"]}/{parameters["name"]}/{parameters["providers"]}/{latest_version}/download'
-        return RegistryResponse(
-            f'<a href="{location}">Found</a>',
-            status=302,
-            headers={
-                'Location': location,
-                'Content-Type': 'text/html'
-            }
-        )
-
-    if parameters['version'] == 'versions':
-        versions = registry.list_versions(parameters['namespace'], parameters['name'], parameters['provider'])
-        response = {
-            'modules': [{
-                'source': f'{parameters["namespace"]}/{parameters["name"]}/{parameters["provider"]}',
-                'versions': [{'version': version} for version in versions]
-            }]
-        }
-        return RegistryResponse(response)
-
-    if event['path'].endswith('/download'):
-        url = registry.download(parameters['namespace'], parameters['name'], parameters['provider'],
-                                parameters['version'])
-
-        return RegistryResponse(headers={
-            'X-Terraform-Get': '/download.tar.gz?url=' + base64.b64encode(url.encode()).decode()
-        })
-
-    if event['path'].endswith('/upload'):
-        if parameters['namespace'] not in registry_auth.write_namespaces(get_api_token(event)):
-            raise RegistryError(403, 'Forbidden')
-
-        url = registry.upload(parameters['namespace'], parameters['name'], parameters['provider'],
-                                parameters['version'])
-
-        return RegistryResponse(status=307, headers={
-            'Location': url
-        })
-
-    module = registry.get_module(parameters['namespace'], parameters['name'], parameters['provider'],
-                                 parameters['version'])
-    return RegistryResponse(module.to_dict())
-
+    raise RegistryError(501, 'Not Implemented')
 
 def handler(event: Dict, context=None) -> Dict:
     logger.info('event: %r', event)
 
-    global registry, registration_auth
+    global module_registry, provider_registry, registration_auth
 
     if registry is None:
-        registry = Registry(os.environ['TerraformModules'])
+        module_registry = ModuleRegistry(os.environ['TerraformModules'])
+        provider_registry = ProviderRegistry(os.environ['TerraformModules'])
 
     if registration_auth is None:
         registration_auth = RegistryAuthorization(os.environ['ApiTokens'])
 
     try:
-        response = registry_request(event, registry, registration_auth)
+        response = registry_request(event, module_registry, registration_auth)
+
         return response.api_gateway_response()
     except RegistryError as registry_error:
         logger.exception('RegistryError')

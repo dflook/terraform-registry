@@ -14,11 +14,12 @@ build/lambda_requirements: src/requirements.txt build/venv
 	build/venv/bin/pip install -r $< --target $@
 
 build/lambda.zip: build/lambda_requirements $(LAMBDA_CODE)
+	rm $@
 	cd build/lambda_requirements && zip --recurse-paths $(abspath $@) *
 	cd src && zip $(abspath $@) *.py
 
 build/registry.template: create_template.py build/lambda.zip build/venv
-	build/venv/bin/python $< "$(TAG)" --output $@
+	TROPO_REAL_BOOL=true build/venv/bin/python $< "$(TAG)" --output $@
 
 clean:
 	rm -rf build

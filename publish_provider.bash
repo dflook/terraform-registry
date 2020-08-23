@@ -2,7 +2,7 @@
 
 set -e
 
-readonly REGISTRY_URL=$1
+readonly REGISTRY_HOST=$1
 readonly MODULE_NAME=$2
 readonly VERSION=$3
 readonly MODULE_PATH=$4
@@ -26,5 +26,5 @@ trap finish EXIT
 cd $MODULE_PATH
 tar -czvf $DIR/$VERSION.tar.gz *
 
-MODULE_REGISTRY_PATH=$(curl --fail --silent --location https://$REGISTRY_URL/.well-known/terraform.json | jq -r '."modules.v1"')
-curl --location --fail -X PUT https://$REGISTRY_URL$MODULE_REGISTRY_PATH$MODULE_NAME/$VERSION/upload --data-binary "@$DIR/$VERSION.tar.gz" -H "Content-Type: application/x-tar" -H "Authorization: Bearer $API_TOKEN"
+curl -L https://
+curl -L -X PUT https://$REGISTRY_HOST/v1/$MODULE_NAME/$VERSION/upload --data-binary "@$DIR/$VERSION.tar.gz" -H "Content-Type: application/x-tar" -H "Authorization: Bearer $API_TOKEN"
