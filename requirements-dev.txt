@@ -4,4 +4,6 @@ docopt
 awacs
 yq
 boto3
+mypy
+cfn-lint
 -r src/requirements.txt
