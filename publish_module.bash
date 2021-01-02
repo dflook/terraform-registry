@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -e
+set -ex
 
 readonly REGISTRY_URL=$1
 readonly MODULE_NAME=$2
@@ -29,7 +29,7 @@ tar -czvf $DIR/$VERSION.tar.gz *
 MODULE_REGISTRY_API=$(curl --fail --silent --location https://$REGISTRY_URL/.well-known/terraform.json | jq -r '."modules.v1"')
 
 if [[ "$(echo $MODULE_REGISTRY_API | head -c 1)" == "/" ]]; then
-  MODULE_REGISTRY_URL=https://$REGISTRY_URL$MODULE_REGISTRY_PATH
+  MODULE_REGISTRY_URL=https://$REGISTRY_URL/$MODULE_REGISTRY_API
 else
   MODULE_REGISTRY_URL=$MODULE_REGISTRY_API
 fi

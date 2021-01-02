@@ -6,4 +6,5 @@ yq
 boto3
 mypy
 cfn-lint
+pytest
 -r src/requirements.txt

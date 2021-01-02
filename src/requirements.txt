@@ -1,2 +1,4 @@
 semantic_version
 requests
+wrapt
+jinja2

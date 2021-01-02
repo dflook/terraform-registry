@@ -17,7 +17,7 @@ Options:
 
 import base64
 import hashlib
-from typing import Tuple
+from typing import Tuple, Dict
 
 import troposphere.apigatewayv2 as apigatewayv2
 import troposphere.awslambda as awslambda
@@ -26,14 +26,9 @@ import troposphere.iam as iam
 import troposphere.route53 as route53
 from awacs.aws import PolicyDocument, Statement, Allow, Action, Principal
 from docopt import docopt
-from troposphere import Template, GetAtt, StackName, Ref, Join, Region, AccountId, Sub, Parameter, Retain
+from troposphere import Template, GetAtt, StackName, Ref, Join, Region, AccountId, Sub, Parameter, Retain, s3
 from troposphere_dns_certificate.certificatemanager import Certificate
-
-from provider_registry import add_provider_registry
-from login import add_login
-from module_registry import add_module_registry
-from provider_mirror import add_provider_mirror
-from service_discovery import add_service_discovery
+from awacs.aws import PolicyDocument, Statement, Allow, Action, Principal, Condition, Bool, Deny
 
 LAMBDA_PACKAGE_BUCKET = 'terraform-registry-build'
 
@@ -74,7 +69,7 @@ class TerraformRegistryTemplate(Template):
             Description='The hosted zone'
         ))
         self.set_parameter_label(self.hosted_zone, 'Hosted Zone')
-        self.add_parameter_to_group(self.domain, 'Deployment Domain')
+        self.add_parameter_to_group(self.hosted_zone, 'Deployment Domain')
 
         self.github_client_id = self.add_parameter(Parameter(
             'GitHubClientId',
@@ -82,7 +77,7 @@ class TerraformRegistryTemplate(Template):
             Description='The GitHub App OAuth Client Id'
         ))
         self.set_parameter_label(self.github_client_id, 'GitHub Client ID')
-        self.add_parameter_to_group(self.domain, 'GitHub OAuth')
+        self.add_parameter_to_group(self.github_client_id, 'GitHub OAuth')
 
         self.github_client_secret = self.add_parameter(Parameter(
             'GitHubClientSecret',
@@ -90,32 +85,69 @@ class TerraformRegistryTemplate(Template):
             Description='The GitHub App OAuth Client Secret'
         ))
         self.set_parameter_label(self.github_client_secret, 'GitHub Client Secret')
-        self.add_parameter_to_group(self.domain, 'GitHub OAuth')
+        self.add_parameter_to_group(self.github_client_secret, 'GitHub OAuth')
 
         self.admin_email = self.add_parameter(Parameter(
             'AdminEmail',
             Type='String',
             Description='The email address of the master admin user'
         ))
-        self.set_parameter_label(self.github_client_secret, 'Admin user email address')
-        self.add_parameter_to_group(self.domain, 'GitHub OAuth')
+        self.set_parameter_label(self.admin_email, 'Admin user email address')
+        self.add_parameter_to_group(self.admin_email, 'GitHub OAuth')
 
         certificate = self.add_certificate()
 
-        api_tokens_table = self.add_api_token_table()
+        #api_tokens_table = self.add_api_token_table()
 
-        ui_api = self.add_ui(certificate)
+        s3_buckets = { bucket_name: self.add_bucket(bucket_name) for bucket_name in ['TerraformModules']}
 
-        module_api_url = add_module_registry(self, api_tokens_table)
-        provider_api_url = add_provider_registry(self, api_tokens_table)
-        login_api_url = add_login(self, api_tokens_table)
+        dynamodb_tables = {
+            'Sessions': self.add_session_table()
+        }
 
-        add_service_discovery(self,
-                              ui_api,
-                              module_api_url=module_api_url,
-                              login_api_url=login_api_url,
-                              provider_api_url=provider_api_url)
-        add_provider_mirror(self, ui_api)
+        self.add_apigateway(certificate, dynamodb_tables, s3_buckets)
+
+    def add_bucket(self, bucket_name):
+        bucket = self.add_resource(s3.Bucket(
+            bucket_name,
+            AccessControl='Private',
+            BucketEncryption=s3.BucketEncryption(
+                ServerSideEncryptionConfiguration=[
+                    s3.ServerSideEncryptionRule(
+                        ServerSideEncryptionByDefault=s3.ServerSideEncryptionByDefault(SSEAlgorithm='AES256')
+                    )
+                ]
+            ),
+            PublicAccessBlockConfiguration=s3.PublicAccessBlockConfiguration(
+                BlockPublicAcls=True,
+                BlockPublicPolicy=True,
+                IgnorePublicAcls=True,
+                RestrictPublicBuckets=True
+            )
+        ))
+
+        self.add_resource(s3.BucketPolicy(
+            f'{bucket_name}BucketPolicy',
+            Bucket=Ref(bucket),
+            PolicyDocument=PolicyDocument(
+                Version='2012-10-17',
+                Statement=[
+                    Statement(
+                        Effect=Deny,
+                        Action=[Action('s3', '*')],
+                        Principal=Principal('*'),
+                        Resource=[Join('', ['arn:aws:s3:::', Ref(bucket), '/*'])],
+                        Condition=Condition(
+                            Bool({
+                                'aws:SecureTransport': False
+                            })
+                        )
+                    )
+                ]
+            ),
+        ))
+
+        return bucket
 
     def add_certificate(self):
         return self.add_resource(Certificate(
@@ -152,18 +184,61 @@ class TerraformRegistryTemplate(Template):
             )
         ))
 
-    def add_ui(self, certificate):
+    def add_session_table(self):
+        return self.add_resource(dynamodb.Table(
+            'Sessions',
+            TableName=Sub('${AWS::StackName}Sessions'),
+            AttributeDefinitions=[
+                dynamodb.AttributeDefinition(AttributeName='session_id', AttributeType='S')
+            ],
+            BillingMode='PAY_PER_REQUEST',
+            KeySchema=[
+                dynamodb.KeySchema(AttributeName='session_id', KeyType='HASH')
+            ],
+            SSESpecification=dynamodb.SSESpecification(SSEEnabled=True),
+            TimeToLiveSpecification=dynamodb.TimeToLiveSpecification(
+                AttributeName='exp',
+                Enabled=True
+            )
+        ))
+
+    def add_apigateway(self, certificate, dynamodb_tables: Dict, s3_buckets: Dict):
         role = self.add_resource(iam.Role(
             'UiLambdaRole',
             AssumeRolePolicyDocument=PolicyDocument(
                 Version='2012-10-17',
-                Statement=[Statement(
-                    Effect=Allow,
-                    Action=[Action('sts', 'AssumeRole')],
-                    Principal=Principal('Service', 'lambda.amazonaws.com')
-                )]
+                Statement=[
+                    Statement(
+                        Effect=Allow,
+                        Action=[Action('sts', 'AssumeRole')],
+                        Principal=Principal('Service', 'lambda.amazonaws.com')
+                    )
+                ]
             ),
             ManagedPolicyArns=['arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'],
+            Policies=[
+                iam.Policy(
+                    PolicyName='Sessions',
+                    PolicyDocument=PolicyDocument(
+                        Statement=[
+                            Statement(
+                                Effect=Allow,
+                                Action=[Action('dynamodb', '*')],
+                                Resource=[GetAtt(table, 'Arn') for table in dynamodb_tables.values()]
+                            ),
+                            Statement(
+                                Effect=Allow,
+                                Action=[Action('s3', '*')],
+                                Resource=[
+                                    GetAtt(bucket, 'Arn') for bucket in s3_buckets.values()
+                                ] + [
+                                    Join('', [GetAtt(bucket, 'Arn'), '/*']) for bucket in s3_buckets.values()
+                                ]
+                            ),
+                        ]
+                    )
+                )
+            ]
         ))
 
         aws_sha256, hex_sha256 = sha256('build/lambda.zip')
@@ -176,10 +251,18 @@ class TerraformRegistryTemplate(Template):
                 S3Bucket=LAMBDA_PACKAGE_BUCKET,
                 S3Key=f'lambda/{hex_sha256}.zip'
             ),
-            Handler='ui.handler',
+            Handler='apigateway_entrypoint.handler',
             Timeout=25,
             Role=GetAtt(role, 'Arn'),
             Description=Sub('${AWS::StackName} UI'),
+            Environment=awslambda.Environment(
+                Variables={
+                    'GITHUB_CLIENT_ID': Ref(self.github_client_id),
+                    'GITHUB_CLIENT_SECRET': Ref(self.github_client_secret),
+                    **{f'{k}Table': Ref(v) for k, v in dynamodb_tables.items()},
+                    **{f'{k}Bucket': Ref(v) for k, v in s3_buckets.items()}
+                }
+            )
         ))
 
         lambda_version = self.add_resource(awslambda.Version(

@@ -40,20 +40,3 @@ def provider_packages(event: HttpEvent, hostname: str, namespace: str, type: str
 
     packages['archives'] = { platform: sign_url(package) for platform, package in packages['archives'] }
     return Response(packages)
-
-def handler(event: HttpEvent, context: LambdaContext = None) -> HttpResponse:
-    logger.info('event: %r', event)
-
-    try:
-        response = route_request(event, [
-            (r'^/(?P<hostname>)/(?P<namespace>)/(?P<type>)/index.json$', provider_index),
-            (r'^/(?P<hostname>)/(?P<namespace>)/(?P<type>)/(?<version>).json$', provider_packages)
-        ])
-
-        return response.api_gateway_response()
-    except Error as registry_error:
-        logger.exception('Error')
-        return registry_error.api_gateway_response()
-    except Exception as exception:
-        logger.exception('Exception is %r', type(exception))
-        return Error(500, 'Internal Error', str(exception)).api_gateway_response()

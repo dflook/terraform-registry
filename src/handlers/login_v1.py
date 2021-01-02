@@ -118,17 +118,3 @@ def cli_login(event: HttpEvent) -> Response:
         (r'^/oauth/authorization$', authorization),
         (r'^/oauth/token$', token)
     ])
-
-def handler(event: HttpEvent, context: LambdaContext = None) -> HttpResponse:
-    logger.info('event: %r', event)
-
-    try:
-        response = cli_login(event)
-
-        return response.api_gateway_response()
-    except Error as registry_error:
-        logger.exception('Error')
-        return registry_error.api_gateway_response()
-    except Exception as exception:
-        logger.exception('Exception is %r', type(exception))
-        return Error(500, 'Internal Error', str(exception)).api_gateway_response()

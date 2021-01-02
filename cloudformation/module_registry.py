@@ -24,47 +24,7 @@ def sha256(path) -> Tuple[str, str]:
 
 
 def add_module_registry(template: Template, api_token_table):
-    def add_bucket():
-        bucket = template.add_resource(s3.Bucket(
-            'TerraformModules',
-            AccessControl='Private',
-            BucketEncryption=s3.BucketEncryption(
-                ServerSideEncryptionConfiguration=[
-                    s3.ServerSideEncryptionRule(
-                        ServerSideEncryptionByDefault=s3.ServerSideEncryptionByDefault(SSEAlgorithm='AES256')
-                    )
-                ]
-            ),
-            PublicAccessBlockConfiguration=s3.PublicAccessBlockConfiguration(
-                BlockPublicAcls=True,
-                BlockPublicPolicy=True,
-                IgnorePublicAcls=True,
-                RestrictPublicBuckets=True
-            )
-        ))
 
-        template.add_resource(s3.BucketPolicy(
-            'TerraformModulesBucketPolicy',
-            Bucket=Ref(bucket),
-            PolicyDocument=PolicyDocument(
-                Version='2012-10-17',
-                Statement=[
-                    Statement(
-                        Effect=Deny,
-                        Action=[Action('s3', '*')],
-                        Principal=Principal('*'),
-                        Resource=[Join('', ['arn:aws:s3:::', Ref(bucket), '/*'])],
-                        Condition=Condition(
-                            Bool({
-                                'aws:SecureTransport': False
-                            })
-                        )
-                    )
-                ]
-            ),
-        ))
-
-        return bucket
 
     def add_lambda(bucket):
         role = template.add_resource(iam.Role(

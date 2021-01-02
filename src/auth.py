@@ -1,4 +1,4 @@
-from api_gateway import HttpEvent
+from aws.api_gateway_types import HttpEvent
 
 
 def is_authorized_read(event: HttpEvent, namespace: str) -> bool:
