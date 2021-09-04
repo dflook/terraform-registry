@@ -15,7 +15,7 @@ import troposphere.awslambda as awslambda
 import troposphere.iam as iam
 import troposphere.s3 as s3
 
-LAMBDA_PACKAGE_BUCKET = 'terraform-registry-build'
+LAMBDA_PACKAGE_BUCKET = 'dflook-terraform-registry'
 
 
 def sha256(path) -> Tuple[str, str]:

@@ -30,7 +30,7 @@ from troposphere import Template, GetAtt, StackName, Ref, Join, Region, AccountI
 from troposphere_dns_certificate.certificatemanager import Certificate
 from awacs.aws import PolicyDocument, Statement, Allow, Action, Principal, Condition, Bool, Deny
 
-LAMBDA_PACKAGE_BUCKET = 'terraform-registry-build'
+LAMBDA_PACKAGE_BUCKET = 'dflook-terraform-registry'
 
 
 def sha256(path) -> Tuple[str, str]:
@@ -44,7 +44,7 @@ def sha256(path) -> Tuple[str, str]:
 
 class TerraformRegistryTemplate(Template):
 
-    def __init__(self, build_version='0.0.1', *args, **kwargs):
+    def __init__(self, build_version, *args, **kwargs):
         super().__init__(
             Description='Terraform Registry',
             Metadata={
@@ -97,12 +97,14 @@ class TerraformRegistryTemplate(Template):
 
         certificate = self.add_certificate()
 
-        #api_tokens_table = self.add_api_token_table()
-
-        s3_buckets = { bucket_name: self.add_bucket(bucket_name) for bucket_name in ['TerraformModules']}
+        s3_buckets = {
+            'TerraformModules' : self.add_bucket('TerraformModules')
+        }
 
         dynamodb_tables = {
-            'Sessions': self.add_session_table()
+            'Sessions': self.add_session_table(),
+            'ApiTokens': self.add_api_token_table(),
+            'AuthCodes': self.add_auth_code_table()
         }
 
         self.add_apigateway(certificate, dynamodb_tables, s3_buckets)
@@ -164,6 +166,24 @@ class TerraformRegistryTemplate(Template):
                 'Key': 'Name',
                 'Value': Ref(self.domain)
             }]
+        ))
+
+    def add_auth_code_table(self):
+        return self.add_resource(dynamodb.Table(
+            'AuthCodes',
+            TableName=Sub('${AWS::StackName}AuthCodes'),
+            AttributeDefinitions=[
+                dynamodb.AttributeDefinition(AttributeName='code', AttributeType='S')
+            ],
+            BillingMode='PAY_PER_REQUEST',
+            KeySchema=[
+                dynamodb.KeySchema(AttributeName='code', KeyType='HASH')
+            ],
+            SSESpecification=dynamodb.SSESpecification(SSEEnabled=True),
+            TimeToLiveSpecification=dynamodb.TimeToLiveSpecification(
+                AttributeName='exp',
+                Enabled=True
+            )
         ))
 
     def add_api_token_table(self):
@@ -246,10 +266,10 @@ class TerraformRegistryTemplate(Template):
 
         lambda_function = self.add_resource(awslambda.Function(
             'UiLambda',
-            Runtime='python3.8',
+            Runtime='python3.9',
             Code=awslambda.Code(
                 S3Bucket=LAMBDA_PACKAGE_BUCKET,
-                S3Key=f'lambda/{hex_sha256}.zip'
+                S3Key=f'build/lambda-package/{hex_sha256}.zip'
             ),
             Handler='apigateway_entrypoint.handler',
             Timeout=25,

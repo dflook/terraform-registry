@@ -1,5 +1,4 @@
 import logging
-import os
 
 from aws.api_gateway_types import HttpEvent
 from aws.response import JsonResponse

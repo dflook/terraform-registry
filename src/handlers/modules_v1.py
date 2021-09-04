@@ -121,7 +121,7 @@ def upload_version(event: HttpEvent, namespace: str, name: str, system: str, ver
         return url
 
     return Response(status=307, headers={
-        'Location': upload_url()
+        'location': upload_url()
     })
 
 modules_v1_router = create_router([

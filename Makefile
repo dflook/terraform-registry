@@ -31,14 +31,13 @@ build/terraform.template: $(wildcard cloudformation/*.py) build/lambda.zip | bui
 	TROPO_REAL_BOOL=true build/venv/bin/python cloudformation/template.py "$(TAG)" --output $@
 	cfn-lint $@ || true
 
-publish: build/terraform.template
-	aws s3 cp build/lambda.zip s3://terraform-registry-build/lambda/$(shell sha256sum build/lambda.zip | cut -d ' ' -f 1).zip
-	aws s3 cp build/terraform.template s3://terraform-registry-build/$(TAG)/
+publish: build/lambda.zip build/terraform.template
+	aws s3 cp build/terraform.template s3://dflook-terraform-registry/build/cloudformation-template/$$(sha256sum build/terraform.template | cut -d ' ' -f 1).template
+	aws s3 cp build/lambda.zip s3://dflook-terraform-registry/build/lambda-package/$$(sha256sum build/lambda.zip | cut -d ' ' -f 1).zip
 
-deploy: build/terraform.template
-	aws s3 cp build/lambda.zip s3://terraform-registry-build/lambda/$(shell sha256sum build/lambda.zip | cut -d ' ' -f 1).zip
-	aws cloudformation update-stack --stack-name TerraformRegistry --template-body file://$< --capabilities CAPABILITY_NAMED_IAM --parameters ParameterKey=DomainName,ParameterValue=terraform-dev.flook.org ParameterKey=HostedZone,ParameterValue=Z2KZ5YTUFZNC7G ParameterKey=GitHubClientId,ParameterValue=7809679faec6b806d706 ParameterKey=GitHubClientSecret,ParameterValue=6fafa01322d657aa8db5ab0d777795a930029295 ParameterKey=AdminEmail,ParameterValue=daniel@flook.org
-	aws cloudformation wait stack-update-complete --stack-name TerraformRegistry
+deploy: build/terraform.template build/lambda.zip | publish
+	aws --region eu-west-1 cloudformation update-stack --stack-name TerraformRegistry --template-body file://$< --capabilities CAPABILITY_NAMED_IAM --parameters ParameterKey=DomainName,ParameterValue=terraform-dev.flook.org ParameterKey=HostedZone,ParameterValue=Z2KZ5YTUFZNC7G ParameterKey=GitHubClientId,ParameterValue=7809679faec6b806d706 ParameterKey=GitHubClientSecret,ParameterValue=6fafa01322d657aa8db5ab0d777795a930029295 ParameterKey=AdminEmail,ParameterValue=daniel@flook.org
+	aws --region eu-west-1 cloudformation wait stack-update-complete --stack-name TerraformRegistry
 
 clean:
 	rm -rf build

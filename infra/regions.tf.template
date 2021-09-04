@@ -1,0 +1,14 @@
+provider aws {
+  alias = "${REGION}"
+  region = "${REGION}"
+}
+
+module "region-${REGION}" {
+    source = "./region"
+
+    providers = {
+      aws = aws.${REGION}
+    }
+
+    region = "${REGION}"
+}

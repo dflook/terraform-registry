@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+
+  <title>Terraform Registry</title>
+</head>
+  <nav>
+    <div class="user">
+      {% if user %}
+        <img src="{{ user.avatar_url }}}"/>{{ user.login }}
+      {% else %}
+        <a href="/user/login">Login with GitHub</a>
+      {% endif %}
+    </div>
+  </nav>
+  <body>
+    <h1>Terraform Registry</h1>
+
+  </body>
+</html>

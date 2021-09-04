@@ -11,7 +11,7 @@ import troposphere.s3 as s3
 from awacs.aws import PolicyDocument, Statement, Allow, Action, Principal, Condition, Bool, Deny
 from troposphere import Template, GetAtt, StackName, Ref, Join, Region, AccountId, Sub, Retain
 
-LAMBDA_PACKAGE_BUCKET = 'terraform-registry-build'
+LAMBDA_PACKAGE_BUCKET = 'dflook-terraform-registry'
 
 
 def sha256(path) -> Tuple[str, str]:

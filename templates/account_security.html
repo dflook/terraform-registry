@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+
+    <title>Terraform Registry</title>
+</head>
+<nav>
+    <div class="user">
+        <a id="logoutButton">Logout</a>
+        <hr/>
+        <img src="{{ user.avatar_url }}}" alt="avatar"/>{{ user.login }}
+    </div>
+</nav>
+<body>
+<h1>Account Security</h1>
+
+<h2>Active Browser Sessions</h2>
+<p>todo</p>
+
+<h2>User API Tokens</h2>
+<button id="createApiTokenButton">Create new</button>
+<table>
+    <tr>
+        <th>Created by</th>
+        <th>Created</th>
+        <th>Last used</th>
+        <th>Expires</th>
+        <th>Delete</th>
+    </tr>
+
+    {% for token in tokens %}
+    <tr>
+        <td>{{ token.client_id }}</td>
+        <td>{{ token.created_at }}</td>
+        <td>{{ token.last_sed }}</td>
+        <td>{{ token.exp }}</td>
+        <td>Delete</td>
+    </tr>
+    {% endfor %}
+</table>
+
+</body>
+</html>
+
+<script type="text/javascript" nonce="{{ csp.script_nonce }}">
+    var csrf_token = "{{ csrf_token }}"
+
+    async function logout(event) {
+        const response = await fetch('/user/logout', {
+            method: 'POST',
+            mode: 'same-origin',
+            cache: 'no-cache',
+            credentials: 'same-origin',
+            headers: {
+                'csrf-token': csrf_token
+            },
+            redirect: 'follow',
+            referrerPolicy: 'same-origin',
+        });
+        window.location.href = '/';
+    }
+
+    async function createApiToken(event) {
+        const response = await fetch('/user/api_tokens', {
+            method: 'POST',
+            mode: 'same-origin',
+            cache: 'no-cache',
+            credentials: 'same-origin',
+            headers: {
+                'csrf-token': csrf_token
+            },
+            redirect: 'follow',
+            referrerPolicy: 'same-origin',
+        });
+
+        const json = await response.json();
+
+        console.log(`Created API Token ${json.access_token}`)
+    }
+
+    document.querySelector("#logoutButton").addEventListener('click', logout);
+    document.querySelector("#createApiTokenButton").addEventListener('click', createApiToken);
+</script>
+

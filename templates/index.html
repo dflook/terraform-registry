@@ -5,7 +5,41 @@
 
   <title>Terraform Registry</title>
 </head>
+  <nav>
+    <div class="user">
+      {% if user %}
+        <a href="/user/security">Account security</a><a id="logoutButton">Logout</a>
+        <hr />
+        <img src="{{ user.avatar_url }}}"/>{{ user.login }}
+      {% else %}
+        <a href="/user/login">Login with GitHub</a>
+      {% endif %}
+    </div>
+  </nav>
   <body>
     <h1>Terraform Registry</h1>
+
   </body>
 </html>
+{% if user %}
+<script type="text/javascript" nonce="{{ csp.script_nonce }}">
+    var csrf_token = "{{ csrf_token }}"
+
+    async function logout(event) {
+        const response = await fetch('/user/logout', {
+            method: 'POST',
+            mode: 'same-origin',
+            cache: 'no-cache',
+            credentials: 'same-origin',
+            headers: {
+              'csrf-token': csrf_token
+            },
+            redirect: 'follow',
+            referrerPolicy: 'same-origin',
+        });
+        window.location.href='/';
+    }
+
+    document.querySelector("#logoutButton").addEventListener('click', logout);
+ </script>
+{% endif %}
