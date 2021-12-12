@@ -1,3 +1,5 @@
+This project is not maintained.
+
 # AWS Serverless Terraform Registry
 
 This is a lightweight Terraform module registry
