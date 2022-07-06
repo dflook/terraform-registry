@@ -164,7 +164,7 @@ class TerraformRegistryTemplate(Template):
 
         lambda_function = self.add_resource(awslambda.Function(
             'TerraformRegistry',
-            Runtime='python3.7',
+            Runtime='python3.9',
             Code=awslambda.Code(
                 S3Bucket=LAMBDA_PACKAGE_BUCKET,
                 S3Key=f'{self._build_version}/lambda.zip'
